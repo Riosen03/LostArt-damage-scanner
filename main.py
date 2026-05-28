@@ -1,6 +1,26 @@
 import cv2
 import numpy as np
 import mss
+import easyocr  # OCR 라이브러리 추가
+import re       # 정규표현식(문자열 필터링) 라이브러리 추가
+import time     # 시간 측정을 위해 time 모듈 추가
+import collections # 최빈값 계산
+
+# ==========================================
+# [OCR Load part]
+# 숫자만 read -> 'en'(영어) 모델만 로드
+reader = easyocr.Reader(['en']) 
+print("OCR 로드 완료")
+
+# # 중복 방지를 위한 상태 기억 변수
+# last_damage = ""
+# last_time = 0
+
+# 상태 기억 변수를 버퍼(리스트) 형태로 저장
+damage_buffer = []
+last_detect_time = time.time()
+# ==========================================
+
 
 # 화면 캡처를 위한 mss 객체 생성
 with mss.mss() as sct:
@@ -84,13 +104,61 @@ with mss.mss() as sct:
 
         # ==========================================
 
-        # 화면 출력 테스트
-        cv2.imshow('Original ROI', img_bgr)
-        cv2.imshow('Yellow Mask', mask_cleaned)
+
+        # ==========================================
+        # [text OCR Part]
+            # OCR로 크롭된 이미지 읽기 (detail=0은 텍스트 문자열만 리스트로 반환함)
+            ocr_result = reader.readtext(final_crop, detail=0)
+
+            if ocr_result:
+                # 인식된 결과 리스트를 하나의 문자열로 합치기
+                raw_text = "".join(ocr_result)
+
+                # 정규표현식을 사용하여 숫자(0-9)가 아닌 모든 문자(알파벳, 쉼표 등) 제거
+                # "306,867"을 "306867"의 순수 숫자로 정제합니다.
+                clean_number = re.sub(r'[^0-9]', '', raw_text)
+
+                # # 중복 방지
+                # if clean_number:
+                #     current_time = time.time()
+                    
+                #     # 방금 읽은 데미지와 다르거나, 같은 데미지라도 1.5초 이상 지났다면 (연속 타격 인정) 새로운 타격으로 간주
+                #     if clean_number != last_damage or (current_time - last_time) > 1.5:
+                #         print(f"[새로운 데미지 인식 완료] : {clean_number}")
+                        
+                #         # 방금 인식한 데이터로 기억 갱신
+                #         last_damage = clean_number
+                #         last_time = current_time
+
+
+                # 버퍼 수집
+                # 자잘한 1~3자리 노이즈는 무시하고, 4자리 이상의 유의미한 데미지만 바구니에 담기
+                if clean_number and len(clean_number) >= 4:
+                    damage_buffer.append(clean_number)
+                    last_detect_time = time.time() # 숫자가 마지막으로 목격된 시간 갱신
+        
+        # 화면에서 숫자가 안 보인지 0.5초가 지났고, 바구니(버퍼)에 수집된 데이터가 있다면?
+        if (time.time() - last_detect_time) > 0.1 and len(damage_buffer) > 0:
+            
+            # 수집된 숫자들 중 '가장 많이 등장한 숫자'를 찾음 (노이즈 필터링의 핵심)
+            counter = collections.Counter(damage_buffer)
+            final_damage = counter.most_common(1)[0][0]
+            
+            # 추후 이 final_damage를 SQLite DB에 INSERT 하시면 됩니다!
+            print(f" [최종 데미지 확정 DB 저장] : {final_damage} (참고: 수집된 프레임 수 {len(damage_buffer)}개)")
+            print("-" * 50)
+            
+            # 다음 타격을 위해 바구니를 깨끗하게 비우기
+            damage_buffer.clear()
+            
+        # ==========================================
+
+        # 화면 출력 테스트(불필요한 화면 주석처리)
+        # cv2.imshow('Original ROI', img_bgr)       
+        # cv2.imshow('Yellow Mask', mask_cleaned)
         cv2.imshow('Bounding Box Result', img_result)
 
         # 'q' 키를 누르면 루프 탈출
-        # waitKey(1)은 1ms 동안 키 입력을 대기하며 화면을 갱신하는 역할을 합니다.
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
